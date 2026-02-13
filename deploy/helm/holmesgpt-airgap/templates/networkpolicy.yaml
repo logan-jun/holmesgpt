@@ -1,0 +1,62 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}-holmes-netpol
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: holmes
+spec:
+  podSelector:
+    matchLabels:
+      app: holmes
+  policyTypes:
+    - Egress
+    - Ingress
+  ingress:
+    # Allow inbound traffic to Holmes HTTP port
+    - ports:
+        - protocol: TCP
+          port: 5050
+  egress:
+    # DNS (CoreDNS)
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Kubernetes API Server
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+    # vLLM Service
+    - ports:
+        - protocol: TCP
+          port: {{ .Values.networkPolicy.vllmPort }}
+    # Prometheus
+    - ports:
+        - protocol: TCP
+          port: 9090
+    # Grafana
+    - ports:
+        - protocol: TCP
+          port: 3000
+    # Kubelet (for logs)
+    - ports:
+        - protocol: TCP
+          port: 10250
+    {{- if .Values.networkPolicy.additionalEgress }}
+    {{- range .Values.networkPolicy.additionalEgress }}
+    - ports:
+        - protocol: TCP
+          port: {{ .port }}
+      {{- if .cidr }}
+      to:
+        - ipBlock:
+            cidr: {{ .cidr }}
+      {{- end }}
+    {{- end }}
+    {{- end }}
+{{- end }}

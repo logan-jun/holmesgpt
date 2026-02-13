@@ -1,0 +1,137 @@
+# HolmesGPT Air-Gapped Values
+# Optimized for closed-network Kubernetes environments with vLLM
+
+# -- Container Image
+# Change registry to your private registry (e.g., "harbor.example.com/holmesgpt")
+registry: "hansl2004"
+image: "holmesgpt-airgap:v1.1.0"
+imagePullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# -- Replicas
+replicas: 1
+revisionHistoryLimit: 5
+
+# -- Logging
+logLevel: INFO
+
+# -- Additional environment variables and volumes
+# Tool output token limits (prevents max_tokens errors with large tool responses)
+additionalEnvVars:
+  - name: TOOL_MAX_ALLOCATED_CONTEXT_WINDOW_PCT
+    value: "10"
+  - name: TOOL_MAX_ALLOCATED_CONTEXT_WINDOW_TOKENS
+    value: "12000"
+additionalVolumes: []
+additionalVolumeMounts: []
+podAnnotations: {}
+
+# -- LLM Temperature
+# Default Holmes value (1e-08) breaks tool calling on some open-source models.
+# Set to "0" for vLLM/open-source model compatibility.
+temperature: "0"
+
+# -- vLLM Configuration
+vllm:
+  endpoint: "http://VLLM_SERVICE.VLLM_NAMESPACE.svc.cluster.local:8000/v1"
+  apiKey: "none"
+  modelName: "gpt-oss-120b"
+  requestTimeout: "600"
+  maxContentSize: "131072"
+  maxOutputToken: "4096"
+
+# -- Model List (for LiteLLM routing)
+# Auto-generated from vllm.* if left empty
+modelList: {}
+
+# -- Toolsets (air-gapped optimized)
+toolsets:
+  kubernetes/core:
+    enabled: true
+  kubernetes/logs:
+    enabled: true
+  bash:
+    enabled: true
+    config:
+      include_default_allow_deny_list: true
+  connectivity_check:
+    enabled: true
+  runbook:
+    enabled: true
+  prometheus/metrics:
+    enabled: true
+    config:
+      prometheus_url: ""  # Set via prometheus.url below
+  grafana/dashboards:
+    enabled: true
+    config:
+      api_url: ""         # Set via grafana.url below
+      api_key: ""         # Set via grafana.apiKey below
+  argocd/core:
+    enabled: true
+  # Disabled for air-gapped environments
+  robusta:
+    enabled: false
+  internet:
+    enabled: false
+
+# -- Monitoring Integration
+prometheus:
+  url: "http://prometheus-server.monitoring.svc.cluster.local:9090"
+grafana:
+  url: "http://grafana.monitoring.svc.cluster.local:3000"
+  apiKey: ""
+
+# -- Autoscaling (HPA)
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPU: "60"
+  targetMemory: ""
+  behavior: {}
+
+# -- Service Account & RBAC
+createServiceAccount: true
+customServiceAccountName: ""
+customClusterRoleRules: []
+
+serviceAccount:
+  imagePullSecrets: []
+  annotations: {}
+
+# -- CRD Permissions (all disabled by default for air-gapped)
+crdPermissions:
+  argo: false
+  flux: false
+  kafka: false
+  keda: false
+  crossplane: false
+  istio: false
+  gatewayApi: false
+  velero: false
+  externalSecrets: false
+
+openshift: false
+
+# -- Network Policy
+networkPolicy:
+  enabled: true
+  # vLLM service port
+  vllmPort: 8000
+  # Additional egress rules (list of {port, cidr} maps)
+  additionalEgress: []
+
+# -- Resources
+resources:
+  requests:
+    cpu: 100m
+    memory: 2048Mi
+  limits:
+    memory: 2048Mi
+
+# -- Scheduling
+affinity: {}
+nodeSelector: ~
+tolerations: []
+priorityClassName: ""

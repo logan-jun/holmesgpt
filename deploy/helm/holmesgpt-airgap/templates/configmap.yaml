@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-toolsets-configmap
+  namespace: {{ .Release.Namespace }}
+data:
+  custom_toolset.yaml: |-
+    {{- $toolsets := deepCopy .Values.toolsets }}
+    {{- if .Values.prometheus.url }}
+    {{- $_ := set (index $toolsets "prometheus/metrics") "config" (dict "prometheus_url" .Values.prometheus.url) }}
+    {{- end }}
+    {{- if .Values.grafana.url }}
+    {{- $grafanaConfig := dict "api_url" .Values.grafana.url }}
+    {{- if .Values.grafana.apiKey }}
+    {{- $_ := set $grafanaConfig "api_key" .Values.grafana.apiKey }}
+    {{- end }}
+    {{- $_ := set (index $toolsets "grafana/dashboards") "config" $grafanaConfig }}
+    {{- end }}
+    toolsets: {{ toYaml $toolsets | nindent 6 }}
+    mcp_servers: {}
+  model_list.yaml: |-
+    {{- if .Values.modelList }}
+    {{ .Values.modelList | toYaml | nindent 4 }}
+    {{- else }}
+    {{ .Values.vllm.modelName | quote }}:
+      model: {{ .Values.vllm.modelName | quote }}
+      {{- if and .Values.vllm.endpoint (ne .Values.vllm.endpoint "") }}
+      api_base: {{ .Values.vllm.endpoint | quote }}
+      {{- end }}
+      {{- if and .Values.vllm.apiKey (ne .Values.vllm.apiKey "none") (ne .Values.vllm.apiKey "") }}
+      api_key: {{ .Values.vllm.apiKey | quote }}
+      {{- end }}
+      {{- if .Values.vllm.maxOutputToken }}
+      max_tokens: {{ .Values.vllm.maxOutputToken }}
+      {{- end }}
+    {{- end }}
+  litellm_model_cost.json: |-
+    {
+      {{ .Values.vllm.modelName | quote }}: {
+        "max_tokens": {{ .Values.vllm.maxContentSize | default "131072" }},
+        "max_input_tokens": {{ .Values.vllm.maxContentSize | default "131072" }},
+        "max_output_tokens": {{ .Values.vllm.maxOutputToken | default "4096" }},
+        "input_cost_per_token": 0,
+        "output_cost_per_token": 0,
+        "litellm_provider": "openai",
+        "mode": "chat",
+        "supports_function_calling": true
+      }
+    }
