@@ -20,6 +20,8 @@ from holmes.common.env_vars import ROBUSTA_CONFIG_PATH
 from holmes.core.llm import DefaultLLM, LLMModelRegistry
 from holmes.core.tools_utils.tool_executor import ToolExecutor
 from holmes.core.toolset_manager import ToolsetManager
+
+LANGCHAIN_AGENT = os.environ.get("LANGCHAIN_AGENT", "false").lower() == "true"
 from holmes.plugins.runbooks import (
     RunbookCatalog,
     load_runbook_catalog,
@@ -331,13 +333,16 @@ class Config(RobustaBaseConfig):
         model_name: Optional[str] = None,
     ) -> "ToolCallingLLM":
         tool_executor = self.create_console_tool_executor(dal, refresh_toolsets)
+        llm = self._get_llm(tracer=tracer, model_key=model_name)
+
+        if LANGCHAIN_AGENT:
+            from holmes.core.langchain import get_agent_class
+
+            return get_agent_class()(tool_executor, self.max_steps, llm, tracer)
+
         from holmes.core.tool_calling_llm import ToolCallingLLM
 
-        return ToolCallingLLM(
-            tool_executor,
-            self.max_steps,
-            self._get_llm(tracer=tracer, model_key=model_name),
-        )
+        return ToolCallingLLM(tool_executor, self.max_steps, llm)
 
     def create_agui_toolcalling_llm(
         self,
@@ -346,11 +351,16 @@ class Config(RobustaBaseConfig):
         tracer=None,
     ) -> "ToolCallingLLM":
         tool_executor = self.create_agui_tool_executor(dal)
+        llm = self._get_llm(model, tracer)
+
+        if LANGCHAIN_AGENT:
+            from holmes.core.langchain import get_agent_class
+
+            return get_agent_class()(tool_executor, self.max_steps, llm, tracer)
+
         from holmes.core.tool_calling_llm import ToolCallingLLM
 
-        return ToolCallingLLM(
-            tool_executor, self.max_steps, self._get_llm(model, tracer)
-        )
+        return ToolCallingLLM(tool_executor, self.max_steps, llm)
 
     def create_toolcalling_llm(
         self,
@@ -359,11 +369,16 @@ class Config(RobustaBaseConfig):
         tracer=None,
     ) -> "ToolCallingLLM":
         tool_executor = self.create_tool_executor(dal)
+        llm = self._get_llm(model, tracer)
+
+        if LANGCHAIN_AGENT:
+            from holmes.core.langchain import get_agent_class
+
+            return get_agent_class()(tool_executor, self.max_steps, llm, tracer)
+
         from holmes.core.tool_calling_llm import ToolCallingLLM
 
-        return ToolCallingLLM(
-            tool_executor, self.max_steps, self._get_llm(model, tracer)
-        )
+        return ToolCallingLLM(tool_executor, self.max_steps, llm)
 
     def create_issue_investigator(
         self,
@@ -372,12 +387,25 @@ class Config(RobustaBaseConfig):
         tracer=None,
     ) -> "IssueInvestigator":
         tool_executor = self.create_tool_executor(dal)
+        llm = self._get_llm(model, tracer)
+
+        if LANGCHAIN_AGENT:
+            from holmes.core.langchain import get_investigator_class
+
+            return get_investigator_class()(
+                tool_executor=tool_executor,
+                max_steps=self.max_steps,
+                llm=llm,
+                cluster_name=self.cluster_name,
+                tracer=tracer,
+            )
+
         from holmes.core.tool_calling_llm import IssueInvestigator
 
         return IssueInvestigator(
             tool_executor=tool_executor,
             max_steps=self.max_steps,
-            llm=self._get_llm(model, tracer),
+            llm=llm,
             cluster_name=self.cluster_name,
         )
 
@@ -385,12 +413,24 @@ class Config(RobustaBaseConfig):
         self, dal: Optional["SupabaseDal"] = None, model_name: Optional[str] = None
     ) -> "IssueInvestigator":
         tool_executor = self.create_console_tool_executor(dal=dal)
+        llm = self._get_llm(model_key=model_name)
+
+        if LANGCHAIN_AGENT:
+            from holmes.core.langchain import get_investigator_class
+
+            return get_investigator_class()(
+                tool_executor=tool_executor,
+                max_steps=self.max_steps,
+                llm=llm,
+                cluster_name=self.cluster_name,
+            )
+
         from holmes.core.tool_calling_llm import IssueInvestigator
 
         return IssueInvestigator(
             tool_executor=tool_executor,
             max_steps=self.max_steps,
-            llm=self._get_llm(model_key=model_name),
+            llm=llm,
             cluster_name=self.cluster_name,
         )
 
