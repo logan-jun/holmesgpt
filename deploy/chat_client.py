@@ -173,8 +173,7 @@ def _render_prometheus_chart(prom_data: dict, description: str, query: str) -> s
     ax.set_title(description, fontsize=11, pad=8)
     ax.grid(True, alpha=0.3)
     if result_type == "matrix" and len(results) > 1:
-        ax.legend(fontsize=8, loc="upper left", bbox_to_anchor=(1.02, 1))
-        fig.subplots_adjust(right=0.75)
+        ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=2)
 
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
@@ -474,6 +473,9 @@ def hdsp_agent_chat(url: str, timeout: int = 600, system_prompt: str = "", strea
 
                     state["conversation_history"] = data.get("conversation_history")
                     analysis = data.get("analysis", "")
+                    # The ai_answer_end SSE event does NOT include tool_calls.
+                    # Tool results are sent individually via tool_calling_result
+                    # events which include full result.data (stringified).
                     _append(_render_final(analysis, tool_calls))
                     return
 

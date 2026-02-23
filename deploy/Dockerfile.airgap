@@ -3,8 +3,25 @@
 # Removed: Microsoft ODBC (Azure SQL), Sentry
 # Added: OS-level security patches, pip dependency check
 
-# Build stage
-FROM python:3.11-slim-bookworm AS builder
+# Go builder stage — build Go binaries from source with patched Go 1.25.7
+FROM golang:1.25.7 AS go-builder
+
+# Build Helm
+ARG HELM_VERSION=v3.20.0
+RUN git clone --depth 1 --branch ${HELM_VERSION} https://github.com/helm/helm.git /src/helm
+WORKDIR /src/helm
+RUN CGO_ENABLED=0 go build -ldflags="-s -w -X helm.sh/helm/v3/internal/version.version=${HELM_VERSION}" -o /out/helm ./cmd/helm \
+    && /out/helm version
+
+# Build ArgoCD CLI
+ARG ARGOCD_VERSION=v3.3.1
+RUN git clone --depth 1 --branch ${ARGOCD_VERSION} https://github.com/argoproj/argo-cd.git /src/argocd
+WORKDIR /src/argocd
+RUN CGO_ENABLED=0 go build -ldflags="-s -w -X github.com/argoproj/argo-cd/v3/common.version=${ARGOCD_VERSION}" -o /out/argocd ./cmd \
+    && /out/argocd version --client
+
+# Python builder stage
+FROM python:3.13-slim-trixie AS builder
 ENV PATH="/root/.local/bin/:$PATH"
 
 RUN apt-get update \
@@ -32,36 +49,10 @@ ENV VERIFY_CHECKSUM=true \
     VERIFY_SIGNATURES=true
 RUN curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.34/deb/Release.key -o Release.key
 
-# Set the architecture-specific kube lineage URLs
-ARG KUBE_LINEAGE_ARM_URL=https://github.com/robusta-dev/kube-lineage/releases/download/v2.2.4/kube-lineage-macos-latest-v2.2.4
-ARG KUBE_LINEAGE_AMD_URL=https://github.com/robusta-dev/kube-lineage/releases/download/v2.2.4/kube-lineage-ubuntu-latest-v2.2.4
-ARG TARGETPLATFORM
-RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
-    curl -L -o kube-lineage $KUBE_LINEAGE_ARM_URL; \
-    elif [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
-    curl -L -o kube-lineage $KUBE_LINEAGE_AMD_URL; \
-    else \
-    echo "Unsupported platform: $TARGETPLATFORM"; exit 1; \
-    fi
-RUN chmod 777 kube-lineage
-RUN ./kube-lineage --version
-
-# Set the architecture-specific argocd URLs
-ARG ARGOCD_VERSION=v3.3.0
-ARG ARGOCD_ARM_URL=https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_VERSION}/argocd-linux-arm64
-ARG ARGOCD_AMD_URL=https://github.com/argoproj/argo-cd/releases/download/${ARGOCD_VERSION}/argocd-linux-amd64
-RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
-    curl -fsSL -o argocd $ARGOCD_ARM_URL; \
-    elif [ "$TARGETPLATFORM" = "linux/amd64" ]; then \
-    curl -fsSL -o argocd $ARGOCD_AMD_URL; \
-    else \
-    echo "Unsupported platform: $TARGETPLATFORM"; exit 1; \
-    fi
-RUN chmod 777 argocd
-RUN ./argocd --help
-
-# Install Helm
-RUN curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+# Go binaries from go-builder (built with Go 1.25.7)
+COPY --from=go-builder /out/argocd /argocd
+COPY --from=go-builder /out/helm /usr/local/bin/helm
+RUN chmod 777 /argocd /usr/local/bin/helm
 
 # Set up poetry
 ARG PRIVATE_PACKAGE_REGISTRY="none"
@@ -79,7 +70,7 @@ RUN if [ "${PRIVATE_PACKAGE_REGISTRY}" != "none" ]; then \
 
 
 # Final stage
-FROM python:3.11-slim-bookworm
+FROM python:3.13-slim-trixie
 
 ENV PYTHONUNBUFFERED=1
 ENV PATH="/venv/bin:$PATH"
@@ -89,55 +80,65 @@ WORKDIR /app
 
 COPY --from=builder /venv /venv
 
+# Install kubectl, then remove gnupg to eliminate CVE-2026-24882
 RUN apt-get update \
-    && apt-get install -y \
+    && apt-get install -y --no-install-recommends \
     curl \
     jq \
     apt-transport-https \
     gnupg2 \
-    && apt-get purge -y --auto-remove \
-    && apt-get install -y --no-install-recommends libexpat1 \
+    libexpat1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Set up kubectl
 COPY --from=builder /Release.key Release.key
 RUN cat Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg \
     && echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.34/deb/ /' | tee /etc/apt/sources.list.d/kubernetes.list \
-    && apt-get update
-RUN apt-get install -y kubectl
+    && apt-get update \
+    && apt-get install -y kubectl \
+    && apt-get purge -y --auto-remove gnupg gnupg2 gnupg-l10n gnupg-utils gpg gpg-agent gpg-wks-client gpgconf gpgsm dirmngr \
+    && rm -rf /var/lib/apt/lists/* /Release.key
 
 # NOTE: Microsoft ODBC (Azure SQL) intentionally removed for air-gapped environments
 
-# Set up kube lineage
-COPY --from=builder /kube-lineage /usr/local/bin
-RUN kube-lineage --version
-
-# Set up ArgoCD
-COPY --from=builder /argocd /usr/local/bin/argocd
-RUN argocd --help
-
-# Set up Helm
-COPY --from=builder /usr/local/bin/helm /usr/local/bin/helm
-RUN chmod 555 /usr/local/bin/helm
-RUN helm version
+# Set up Go binaries (built from source with Go 1.25.7)
+COPY --from=go-builder /out/helm /usr/local/bin/helm
+COPY --from=go-builder /out/argocd /usr/local/bin/argocd
+RUN chmod 555 /usr/local/bin/helm /usr/local/bin/argocd \
+    && helm version \
+    && argocd version --client
 
 ARG AWS_DEFAULT_PROFILE
 ARG AWS_DEFAULT_REGION
 ARG AWS_PROFILE
 ARG AWS_REGION
 
-# Remove setuptools CVE-2024-6345
-RUN rm -rf /usr/local/lib/python3.11/site-packages/setuptools-65.5.1.dist-info
-RUN rm -rf /usr/local/lib/python3.11/ensurepip/_bundled/setuptools-65.5.0-py3-none-any.whl
+# Remove old setuptools/pip artifacts from base image
+RUN rm -rf /usr/local/lib/python3.13/site-packages/setuptools-65.5.1.dist-info \
+    && rm -rf /usr/local/lib/python3.13/ensurepip/_bundled/setuptools-65.5.0-py3-none-any.whl
 
 # OS-level security patches for air-gapped compliance
 RUN apt-get update && apt-get upgrade -y && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Upgrade Python packages with known vulnerabilities
-RUN pip install --no-cache-dir 'setuptools>=79.0' 'jaraco.context>=6.1.0' 'wheel>=0.46.2' \
-    && rm -rf /usr/local/lib/python3.11/site-packages/setuptools/_vendor/jaraco.context-5.3.0.dist-info \
-    && rm -rf /usr/local/lib/python3.11/site-packages/setuptools/_vendor/wheel-0.45.1.dist-info \
-    && rm -rf /usr/local/lib/python3.11/site-packages/wheel-0.45.1.dist-info
+RUN pip install --no-cache-dir \
+    'setuptools>=79.0' 'jaraco.context>=6.1.0' 'wheel>=0.46.2' \
+    'cryptography>=46.0.5' 'pillow>=12.1.1' \
+    && rm -rf /usr/local/lib/python3.13/site-packages/setuptools/_vendor/jaraco.context-5.3.0.dist-info \
+    && rm -rf /usr/local/lib/python3.13/site-packages/setuptools/_vendor/wheel-0.45.1.dist-info \
+    && rm -rf /usr/local/lib/python3.13/site-packages/wheel-0.45.1.dist-info
+
+# Remove ALL system pip artifacts (CVE-2018-20225 — disputed but flagged by scanners)
+# venv retains pip 26.0.1 for runtime use
+RUN rm -rf /usr/local/lib/python3.13/site-packages/pip*.dist-info \
+    && rm -rf /usr/local/lib/python3.13/site-packages/pip \
+    && rm -rf /usr/local/lib/python3.13/ensurepip/_bundled/pip-*.whl \
+    && rm -rf /venv/lib/python3.13/site-packages/virtualenv/seed/wheels/embed/pip-2[0-5]*.whl
+
+# Remove vulnerable embedded wheels from virtualenv (CVE-2026-24049, CVE-2025-47273)
+# virtualenv bundles old wheel/setuptools .whl files for offline venv creation
+RUN rm -f /venv/lib/python3.13/site-packages/virtualenv/seed/wheels/embed/wheel-0.45*.whl \
+    && rm -f /venv/lib/python3.13/site-packages/virtualenv/seed/wheels/embed/setuptools-75*.whl
+
 
 # Verify Python dependency integrity (warning only, does not fail build)
 RUN pip check 2>&1 || echo "WARNING: pip check found dependency issues (non-blocking)"

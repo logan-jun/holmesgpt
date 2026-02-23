@@ -22,8 +22,13 @@ additionalEnvVars:
     value: "10"
   - name: TOOL_MAX_ALLOCATED_CONTEXT_WINDOW_TOKENS
     value: "12000"
-additionalVolumes: []
-additionalVolumeMounts: []
+additionalVolumes:
+  - name: custom-prompts
+    configMap:
+      name: holmesgpt-custom-prompts
+additionalVolumeMounts:
+  - name: custom-prompts
+    mountPath: /etc/holmes/prompts
 podAnnotations: {}
 
 # -- LLM Temperature
@@ -67,6 +72,8 @@ toolsets:
     config:
       api_url: ""         # Set via grafana.url below
       api_key: ""         # Set via grafana.apiKey below
+  helm/core:
+    enabled: true
   argocd/core:
     enabled: true
   # Disabled for air-gapped environments
@@ -94,7 +101,15 @@ autoscaling:
 # -- Service Account & RBAC
 createServiceAccount: true
 customServiceAccountName: ""
-customClusterRoleRules: []
+customClusterRoleRules:
+  - apiGroups: ["cilium.io"]
+    resources:
+      - ciliumnetworkpolicies
+      - ciliumclusterwidenetworkpolicies
+      - ciliumendpoints
+      - ciliumidentities
+      - ciliumnodes
+    verbs: ["get", "list", "watch"]
 
 serviceAccount:
   imagePullSecrets: []
@@ -125,10 +140,10 @@ networkPolicy:
 # -- Resources
 resources:
   requests:
-    cpu: 100m
-    memory: 2048Mi
+    cpu: 500m
+    memory: 8192Mi
   limits:
-    memory: 2048Mi
+    memory: 8192Mi
 
 # -- Scheduling
 affinity: {}
