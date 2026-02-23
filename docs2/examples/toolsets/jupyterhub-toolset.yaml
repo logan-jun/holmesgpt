@@ -1,0 +1,31 @@
+toolsets:
+  jupyterhub/api:
+    type: http
+    enabled: true
+    config:
+      endpoints:
+        - hosts:
+            - "jupyterhub.jupyterhub.svc.cluster.local"
+          paths: ["/hub/api/*"]
+          methods: ["GET"]
+          auth:
+            type: bearer
+            token: "{{ env.JUPYTERHUB_API_TOKEN }}"
+      verify_ssl: false
+      timeout_seconds: 30
+    llm_instructions: |
+      JupyterHub REST API를 사용하여 사용자 세션과 서버 상태를 조회합니다.
+      Base URL: http://jupyterhub.jupyterhub.svc.cluster.local:8081
+
+      주요 엔드포인트:
+      - GET /hub/api/users - 전체 사용자 목록 및 서버 상태
+      - GET /hub/api/users/{username} - 특정 사용자 정보
+      - GET /hub/api/users/{username}/server - 사용자 서버 상태
+      - GET /hub/api/proxy - 프록시 라우팅 테이블
+      - GET /hub/api/ - API 루트 (버전 정보)
+
+      사용자의 서버 상태:
+      - servers 필드에 서버 목록이 있음
+      - ''(빈 문자열) 키 = 기본 서버
+      - ready: true = 서버 활성 상태
+      - pending: 서버 시작/종료 중

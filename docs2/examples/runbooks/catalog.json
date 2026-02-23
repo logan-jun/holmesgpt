@@ -1,0 +1,26 @@
+[
+  {
+    "title": "Spark 작업 실패 조사",
+    "description": "SparkApplication이 FAILED 상태일 때 원인을 분석하는 런북",
+    "file": "spark-job-failure.md",
+    "match": {
+      "alertname": ["SparkJobFailed", "SparkDriverCrash", "SparkExecutorOOM"]
+    }
+  },
+  {
+    "title": "FastAPI 파드 헬스체크 실패",
+    "description": "FastAPI 서비스의 파드가 비정상 상태이거나 재시작될 때 조사하는 런북",
+    "file": "fastapi-pod-health.md",
+    "match": {
+      "alertname": ["PodCrashLooping", "PodNotReady", "HighRestartCount"]
+    }
+  },
+  {
+    "title": "JupyterHub 사용자 세션 문제",
+    "description": "JupyterHub 사용자 서버가 시작되지 않거나 세션 문제가 발생할 때 조사하는 런북",
+    "file": "jupyterhub-session.md",
+    "match": {
+      "alertname": ["JupyterHubSessionFailed", "JupyterHubSpawnTimeout"]
+    }
+  }
+]

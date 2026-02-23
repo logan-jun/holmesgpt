@@ -1,0 +1,35 @@
+toolsets:
+  spark/operator:
+    description: "Spark Operator (SparkApplication CRD) 작업 조사 도구"
+    prerequisites:
+      - command: "kubectl api-resources | grep sparkapplications"
+    llm_instructions: |
+      Spark Operator로 관리되는 SparkApplication을 조사하는 도구입니다.
+      SparkApplication의 상태는 status.applicationState.state 필드에 있으며,
+      주요 상태값: SUBMITTED, RUNNING, COMPLETED, FAILED, UNKNOWN
+      작업 실패 시 드라이버 로그를 먼저 확인하세요.
+      일반적인 실패 원인: OOM (메모리 부족), Driver crash, Executor timeout, 의존성 문제
+    tools:
+      - name: "spark_list_apps"
+        description: "List all SparkApplications across namespaces with their status"
+        command: "kubectl get sparkapplications -A -o wide"
+
+      - name: "spark_get_app"
+        description: "Get detailed information about a specific SparkApplication"
+        command: "kubectl describe sparkapplication {{ app_name }} -n {{ namespace }}"
+
+      - name: "spark_app_status"
+        description: "Get the status and state of a SparkApplication in JSON format"
+        command: "kubectl get sparkapplication {{ app_name }} -n {{ namespace }} -o jsonpath='{.status}' | jq ."
+
+      - name: "spark_driver_logs"
+        description: "Get logs from a Spark driver pod for a specific application"
+        command: "kubectl logs {{ app_name }}-driver -n {{ namespace }} --tail=200"
+
+      - name: "spark_list_scheduled"
+        description: "List all ScheduledSparkApplications with their schedule and status"
+        command: "kubectl get scheduledsparkapplications -A -o wide"
+
+      - name: "spark_executor_status"
+        description: "Get status of executor pods for a Spark application"
+        command: "kubectl get pods -n {{ namespace }} -l sparkoperator.k8s.io/app-name={{ app_name }},spark-role=executor -o wide"

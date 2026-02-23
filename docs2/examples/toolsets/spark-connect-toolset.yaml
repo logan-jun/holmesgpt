@@ -1,0 +1,25 @@
+toolsets:
+  spark/connect:
+    description: "Spark Connect 서버 상태 조사 도구"
+    prerequisites:
+      - command: "kubectl version --client"
+    llm_instructions: |
+      Spark Connect 서버의 상태를 조사하는 도구입니다.
+      Spark Connect는 gRPC 기반으로 클라이언트와 통신합니다 (기본 포트: 15002).
+      연결 문제 시 서버 파드 상태, 서비스 엔드포인트, 로그를 확인하세요.
+    tools:
+      - name: "spark_connect_server_status"
+        description: "Check the status of Spark Connect server pods"
+        command: "kubectl get pods -n {{ namespace }} -l app=spark-connect -o wide"
+
+      - name: "spark_connect_server_logs"
+        description: "Get recent logs from Spark Connect server"
+        command: "kubectl logs -n {{ namespace }} -l app=spark-connect --tail=200"
+
+      - name: "spark_connect_service"
+        description: "Check Spark Connect service endpoints and ports"
+        command: "kubectl get svc -n {{ namespace }} -l app=spark-connect -o wide"
+
+      - name: "spark_connect_describe"
+        description: "Describe Spark Connect server deployment for detailed status"
+        command: "kubectl describe deployment -n {{ namespace }} -l app=spark-connect"

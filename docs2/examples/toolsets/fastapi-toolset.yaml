@@ -1,0 +1,28 @@
+toolsets:
+  fastapi/services:
+    type: http
+    enabled: true
+    config:
+      endpoints:
+        - hosts:
+            - "*.svc.cluster.local"
+          paths: ["/health", "/healthz", "/ready", "/readyz", "/metrics", "/openapi.json", "/docs", "/api/v1/*"]
+          methods: ["GET"]
+      verify_ssl: false
+      timeout_seconds: 15
+    llm_instructions: |
+      FastAPI 기반 마이크로서비스의 상태를 조회합니다.
+      클러스터 내부의 FastAPI 서비스에 HTTP 요청을 보낼 수 있습니다.
+
+      서비스 URL 패턴: http://{service-name}.{namespace}.svc.cluster.local:{port}
+
+      주요 엔드포인트:
+      - GET /health 또는 /healthz - 헬스체크 (서비스 정상 여부)
+      - GET /ready 또는 /readyz - 레디니스체크 (트래픽 수신 가능 여부)
+      - GET /metrics - Prometheus 메트릭 (응답 시간, 요청 수 등)
+      - GET /openapi.json - API 스펙 (사용 가능한 API 목록)
+      - GET /docs - Swagger UI (API 문서)
+      - GET /api/v1/* - API 엔드포인트 (읽기 전용)
+
+      서비스가 응답하지 않으면 파드 상태와 이벤트를 먼저 확인하세요.
+      여러 서비스의 헬스체크를 확인할 때는 service-name과 namespace를 변경하세요.
