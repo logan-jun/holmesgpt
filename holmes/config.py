@@ -367,11 +367,14 @@ class Config(RobustaBaseConfig):
         dal: Optional["SupabaseDal"] = None,
         model: Optional[str] = None,
         tracer=None,
+        use_langchain: Optional[bool] = None,
     ) -> "ToolCallingLLM":
         tool_executor = self.create_tool_executor(dal)
         llm = self._get_llm(model, tracer)
 
-        if LANGCHAIN_AGENT:
+        # Per-request override takes precedence, then env var default
+        _use_langchain = use_langchain if use_langchain is not None else LANGCHAIN_AGENT
+        if _use_langchain:
             from holmes.core.langchain import get_agent_class
 
             return get_agent_class()(tool_executor, self.max_steps, llm, tracer)
@@ -385,11 +388,13 @@ class Config(RobustaBaseConfig):
         dal: Optional["SupabaseDal"] = None,
         model: Optional[str] = None,
         tracer=None,
+        use_langchain: Optional[bool] = None,
     ) -> "IssueInvestigator":
         tool_executor = self.create_tool_executor(dal)
         llm = self._get_llm(model, tracer)
 
-        if LANGCHAIN_AGENT:
+        _use_langchain = use_langchain if use_langchain is not None else LANGCHAIN_AGENT
+        if _use_langchain:
             from holmes.core.langchain import get_investigator_class
 
             return get_investigator_class()(

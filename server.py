@@ -233,6 +233,7 @@ def investigate_issues(investigate_request: InvestigateRequest, http_request: Re
             model=investigate_request.model,
             runbooks=runbooks,
             request_context=request_context,
+            use_langchain=investigate_request.use_langchain,
         )
         return result
 
@@ -277,7 +278,7 @@ def stream_investigate_issues(req: InvestigateRequest, http_request: Request):
 def issue_conversation(issue_chat_request: IssueChatRequest, http_request: Request):
     try:
         runbooks = config.get_runbook_catalog()
-        ai = config.create_toolcalling_llm(dal=dal, model=issue_chat_request.model)
+        ai = config.create_toolcalling_llm(dal=dal, model=issue_chat_request.model, use_langchain=issue_chat_request.use_langchain)
         global_instructions = dal.get_global_instructions_for_account()
 
         messages = build_issue_chat_messages(
@@ -356,7 +357,7 @@ def chat(chat_request: ChatRequest, http_request: Request):
         )
 
         runbooks = config.get_runbook_catalog()
-        ai = config.create_toolcalling_llm(dal=dal, model=chat_request.model)
+        ai = config.create_toolcalling_llm(dal=dal, model=chat_request.model, use_langchain=chat_request.use_langchain)
         global_instructions = dal.get_global_instructions_for_account()
 
         prompt_component_overrides = None

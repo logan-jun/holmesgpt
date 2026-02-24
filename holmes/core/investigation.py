@@ -27,6 +27,7 @@ def investigate_issues(
     trace_span=DummySpan(),
     runbooks: Optional[RunbookCatalog] = None,
     request_context: Optional[Dict[str, Any]] = None,
+    use_langchain: Optional[bool] = None,
 ) -> InvestigationResult:
     context = dal.get_issue_data(investigate_request.context.get("robusta_issue_id"))
 
@@ -40,7 +41,7 @@ def investigate_issues(
     create_issue_investigator_span = trace_span.start_span(
         "create_issue_investigator", SpanType.FUNCTION.value
     )
-    ai = config.create_issue_investigator(dal=dal, model=model)
+    ai = config.create_issue_investigator(dal=dal, model=model, use_langchain=use_langchain)
     create_issue_investigator_span.end()
 
     issue = Issue(
@@ -83,7 +84,7 @@ def get_investigation_context(
     config: Config,
     request_structured_output_from_llm: Optional[bool] = None,
 ):
-    ai = config.create_issue_investigator(dal=dal, model=investigate_request.model)
+    ai = config.create_issue_investigator(dal=dal, model=investigate_request.model, use_langchain=investigate_request.use_langchain)
 
     raw_data = investigate_request.model_dump()
     context = dal.get_issue_data(investigate_request.context.get("robusta_issue_id"))

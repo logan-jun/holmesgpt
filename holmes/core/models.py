@@ -114,6 +114,10 @@ class InvestigateRequest(BaseModel):
     prompt_template: str = "builtin://generic_investigation.jinja2"
     sections: Optional[InputSectionsDataType] = None
     model: Optional[str] = None
+    use_langchain: Optional[bool] = Field(
+        default=None,
+        description="Override agent type per request. true=LangChain ReAct, false=Original ToolCallingLLM. None=use server default (LANGCHAIN_AGENT env var).",
+    )
     # TODO in the future
     # response_handler: ...
 
@@ -204,6 +208,10 @@ class ChatRequestBaseModel(BaseModel):
     additional_system_prompt: Optional[str] = None
     trace_span: Optional[Any] = (
         None  # Optional span for tracing and heartbeat callbacks
+    )
+    use_langchain: Optional[bool] = Field(
+        default=None,
+        description="Override agent type per request. true=LangChain ReAct, false=Original ToolCallingLLM. None=use server default (LANGCHAIN_AGENT env var).",
     )
 
     # In our setup with litellm, the first message in conversation_history

@@ -243,11 +243,40 @@ class HolmesReActAgent:
         }
 
         # Stream graph execution, converting events to StreamMessages
+        last_state_update = None
         for event in self._graph.stream(initial_state, config, stream_mode="updates"):
             yield from _convert_graph_event_to_stream(event)
+            last_state_update = event
 
-        # After streaming completes, update persistent state
-        # Note: final state is available from the last event
+        # Emit ANSWER_END with final result
+        final_content = ""
+        final_messages_lc = []
+        if last_state_update:
+            for node_name, state_update in last_state_update.items():
+                msgs_update = state_update.get("messages", [])
+                for msg in msgs_update:
+                    content = getattr(msg, "content", "")
+                    if content and not getattr(msg, "tool_calls", None):
+                        final_content = content
+
+        # Get final messages from graph state for conversation_history
+        try:
+            final_state = self._graph.get_state(config)
+            if final_state and final_state.values:
+                final_messages_lc = final_state.values.get("messages", [])
+        except Exception:
+            pass
+
+        openai_messages = langchain_to_openai(final_messages_lc) if final_messages_lc else messages
+
+        yield StreamMessage(
+            event=StreamEvents.ANSWER_END,
+            data={
+                "content": final_content,
+                "messages": openai_messages,
+                "metadata": {},
+            },
+        )
 
     def process_tool_decisions(
         self,
@@ -494,8 +523,19 @@ def _convert_graph_event_to_stream(event: dict) -> Generator[StreamMessage, None
         elif node_name == "call_model":
             messages = state_update.get("messages", [])
             for msg in messages:
+                tool_calls = getattr(msg, "tool_calls", None)
                 content = getattr(msg, "content", "")
-                if content and not getattr(msg, "tool_calls", None):
+                if tool_calls:
+                    # Emit start_tool_calling for each requested tool
+                    for tc in tool_calls:
+                        yield StreamMessage(
+                            event=StreamEvents.START_TOOL,
+                            data={
+                                "tool_name": tc.get("name", ""),
+                                "id": tc.get("id", ""),
+                            },
+                        )
+                elif content:
                     yield StreamMessage(
                         event=StreamEvents.AI_MESSAGE,
                         data={"message": content},
