@@ -73,6 +73,7 @@ langchain-mcp-adapters = {version = ">=0.1", optional = true}
 # Indirect dependencies to restrict vectors to address security vulnerability
 starlette = "^0.49.1"
 urllib3 = "^2.6.3"
+langchain = "^1.2.10"
 
 [tool.poetry.group.dev]
 optional = true
