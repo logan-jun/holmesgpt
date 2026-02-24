@@ -1,22 +1,24 @@
-"""HolmesReActAgent - LangGraph-based drop-in replacement for ToolCallingLLM.
+"""HolmesReActAgent - LangChain create_agent()-based agent.
 
-Provides identical interface to ToolCallingLLM so it can be swapped via feature flag
-without changing any calling code.
+Drop-in replacement for ToolCallingLLM, using create_agent() with custom middleware
+instead of a hand-built StateGraph. Provides identical interface so it can be
+swapped via feature flag without changing any calling code.
 """
 
 import json
 import logging
 from typing import Any, Callable, Dict, Generator, List, Optional, Type, Union
 
+from langchain.agents import create_agent
+from langchain_core.messages import SystemMessage
 from pydantic import BaseModel
 
 from holmes.core.issue import Issue
-from holmes.core.langchain.callbacks import HolmesCostTracker
-from holmes.core.langchain.graph import build_holmes_graph
 from holmes.core.langchain.llm_adapter import HolmesChatModelFactory
 from holmes.core.langchain.message_converter import langchain_to_openai, openai_to_langchain
-from holmes.core.langchain.state import HolmesAgentState
-from holmes.core.langchain.todo_middleware import TodoListMiddleware
+from holmes.core.langchain.middleware.investigation import HolmesInvestigationMiddleware
+from holmes.core.langchain.middleware.tool_execution import HolmesToolExecutionMiddleware
+from holmes.core.langchain.tool_adapter import create_langchain_tools
 from holmes.core.llm import LLM
 from holmes.core.models import ToolApprovalDecision, ToolCallResult
 from holmes.core.tool_calling_llm import LLMResult
@@ -29,10 +31,10 @@ logger = logging.getLogger(__name__)
 
 
 class HolmesReActAgent:
-    """LangGraph-based ReAct agent. Drop-in replacement for ToolCallingLLM.
+    """LangChain create_agent()-based ReAct agent.
 
-    Uses LangGraph StateGraph for the agent loop while reusing Holmes'
-    native tool execution, safeguards, and context window management.
+    Drop-in replacement for ToolCallingLLM using LangChain's standard agent pattern
+    with custom middleware for Holmes-specific logic.
     """
 
     llm: LLM  # Matches ToolCallingLLM attribute
@@ -47,20 +49,32 @@ class HolmesReActAgent:
         self.approval_callback: Optional[
             Callable[[StructuredToolResult], tuple[bool, Optional[str]]]
         ] = None
-        self._runbook_in_use: bool = False
-        self._todo_middleware = TodoListMiddleware()
 
         # Create LangChain chat model from Holmes LLM config
         self._chat_model = HolmesChatModelFactory.create(llm)
 
-        # Build the compiled graph
-        graph_builder = build_holmes_graph()
-        self._graph = graph_builder.compile()
+        # Create middleware instances
+        self._investigation_mw = HolmesInvestigationMiddleware(
+            max_steps=max_steps,
+            tool_executor=tool_executor,
+            holmes_llm=llm,
+        )
+        self._tool_execution_mw = HolmesToolExecutionMiddleware()
+
+        # Create placeholder tools (schema only, execution in wrap_tool_call)
+        self._base_tools = create_langchain_tools(tool_executor, llm.model)
+
+        # Build the agent graph via create_agent()
+        self._graph = create_agent(
+            model=self._chat_model,
+            tools=self._base_tools if self._base_tools else None,
+            system_prompt=None,  # Dynamic injection via wrap_model_call
+            middleware=[self._investigation_mw, self._tool_execution_mw],
+        )
 
     def reset_interaction_state(self) -> None:
         """Reset state for interactive loop (matches ToolCallingLLM interface)."""
-        self._runbook_in_use = False
-        self._todo_middleware.reset()
+        self._investigation_mw.reset()
 
     def prompt_call(
         self,
@@ -110,53 +124,46 @@ class HolmesReActAgent:
         tool_number_offset: int = 0,
         request_context: Optional[Dict[str, Any]] = None,
     ) -> LLMResult:
-        """Run the LangGraph agent and return LLMResult.
+        """Run the agent and return LLMResult.
 
         Matches ToolCallingLLM.call() interface exactly.
         """
-        lc_messages = openai_to_langchain(messages)
+        # Reset middleware for fresh invocation
+        self._investigation_mw.reset()
 
-        initial_state: HolmesAgentState = {
-            "messages": lc_messages,
-            "tool_calls_history": [],
-            "all_tool_call_results": [],
-            "tool_number_offset": tool_number_offset,
-            "step_count": 0,
-            "max_steps": self.max_steps,
-            "total_cost": 0.0,
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "runbook_in_use": self._runbook_in_use,
-            "tasks": [],
-            "pending_approvals": [],
-            "metadata": {},
-        }
+        # Extract system prompt for dynamic injection via middleware
+        system_prompt = None
+        non_system_messages = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                system_prompt = msg.get("content", "")
+            else:
+                non_system_messages.append(msg)
+
+        # Convert to LangChain format (without system - injected by middleware)
+        lc_messages = openai_to_langchain(non_system_messages)
 
         config = {
             "configurable": {
-                "chat_model": self._chat_model,
-                "holmes_llm": self.llm,
+                "system_prompt": system_prompt,
                 "tool_executor": self.tool_executor,
+                "holmes_llm": self.llm,
+                "investigation_middleware": self._investigation_mw,
                 "approval_callback": self.approval_callback,
-                "todo_middleware": self._todo_middleware,
                 "request_context": request_context,
                 "response_format": response_format,
                 "sections": sections,
-            }
+            },
+            "max_concurrency": 16,  # Parallel tool execution workers
         }
 
         # Run the graph to completion
-        final_state = self._graph.invoke(initial_state, config)
-
-        # Update persistent state from graph result
-        self._runbook_in_use = final_state.get("runbook_in_use", False)
+        final_state = self._graph.invoke({"messages": lc_messages}, config)
 
         # Extract final text response
         last_message = final_state["messages"][-1]
         text_response = getattr(last_message, "content", None)
         if isinstance(text_response, list):
-            # Handle content arrays (vision/cache_control)
             text_response = " ".join(
                 item.get("text", "") for item in text_response if isinstance(item, dict)
             )
@@ -164,20 +171,24 @@ class HolmesReActAgent:
         # Convert messages back to OpenAI format for LLMResult
         openai_messages = langchain_to_openai(final_state["messages"])
 
-        # Build tool_calls list from accumulated results
-        tool_calls = _build_tool_call_results(final_state.get("all_tool_call_results", []))
+        # Build tool_calls list from middleware's accumulated results
+        tool_calls = _build_tool_call_results(
+            self._investigation_mw.get_tool_call_results()
+        )
+
+        costs = self._investigation_mw.costs
 
         return LLMResult(
             result=text_response,
             tool_calls=tool_calls,
-            num_llm_calls=final_state.get("step_count", 0),
+            num_llm_calls=self._investigation_mw.step_count,
             prompt=json.dumps(openai_messages, indent=2),
             messages=openai_messages,
-            total_cost=final_state.get("total_cost", 0.0),
-            prompt_tokens=final_state.get("prompt_tokens", 0),
-            completion_tokens=final_state.get("completion_tokens", 0),
-            total_tokens=final_state.get("total_tokens", 0),
-            metadata=final_state.get("metadata"),
+            total_cost=costs["total_cost"],
+            prompt_tokens=costs["prompt_tokens"],
+            completion_tokens=costs["completion_tokens"],
+            total_tokens=costs["total_tokens"],
+            metadata=self._investigation_mw._metadata,
         )
 
     def call_stream(
@@ -201,10 +212,11 @@ class HolmesReActAgent:
             msgs, events = self.process_tool_decisions(msgs, tool_decisions, request_context)
             yield from events
 
+        # Reset middleware for fresh invocation
+        self._investigation_mw.reset()
+
         # Build messages
         messages: list[dict] = []
-        if system_prompt:
-            messages.append({"role": "system", "content": system_prompt})
         if user_prompt:
             messages.append({"role": "user", "content": user_prompt})
         if msgs:
@@ -212,68 +224,42 @@ class HolmesReActAgent:
 
         lc_messages = openai_to_langchain(messages)
 
-        initial_state: HolmesAgentState = {
-            "messages": lc_messages,
-            "tool_calls_history": [],
-            "all_tool_call_results": [],
-            "tool_number_offset": 0,
-            "step_count": 0,
-            "max_steps": self.max_steps,
-            "total_cost": 0.0,
-            "prompt_tokens": 0,
-            "completion_tokens": 0,
-            "total_tokens": 0,
-            "runbook_in_use": self._runbook_in_use,
-            "tasks": [],
-            "pending_approvals": [],
-            "metadata": {},
-        }
-
         config = {
             "configurable": {
-                "chat_model": self._chat_model,
-                "holmes_llm": self.llm,
+                "system_prompt": system_prompt if system_prompt else None,
                 "tool_executor": self.tool_executor,
+                "holmes_llm": self.llm,
+                "investigation_middleware": self._investigation_mw,
                 "approval_callback": self.approval_callback if not enable_tool_approval else None,
-                "todo_middleware": self._todo_middleware,
                 "request_context": request_context,
                 "response_format": response_format,
                 "sections": sections,
-            }
+            },
+            "max_concurrency": 16,
         }
 
-        # Stream graph execution, converting events to StreamMessages
-        last_state_update = None
-        for event in self._graph.stream(initial_state, config, stream_mode="updates"):
-            yield from _convert_graph_event_to_stream(event)
-            last_state_update = event
-
-        # Emit ANSWER_END with final result
+        # Stream graph execution
         final_content = ""
-        final_messages_lc = []
-        if last_state_update:
-            for node_name, state_update in last_state_update.items():
-                msgs_update = state_update.get("messages", [])
-                for msg in msgs_update:
+        for event in self._graph.stream({"messages": lc_messages}, config, stream_mode="updates"):
+            yield from _convert_graph_event_to_stream(event)
+
+            # Track last content for ANSWER_END
+            for node_name, state_update in event.items():
+                for msg in state_update.get("messages", []):
                     content = getattr(msg, "content", "")
                     if content and not getattr(msg, "tool_calls", None):
                         final_content = content
 
-        # Get final messages from graph state for conversation_history
-        try:
-            final_state = self._graph.get_state(config)
-            if final_state and final_state.values:
-                final_messages_lc = final_state.values.get("messages", [])
-        except Exception:
-            pass
-
-        openai_messages = langchain_to_openai(final_messages_lc) if final_messages_lc else messages
+        # Build final messages for conversation_history
+        all_messages = messages.copy()
+        if system_prompt:
+            all_messages.insert(0, {"role": "system", "content": system_prompt})
 
         yield StreamMessage(
             event=StreamEvents.ANSWER_END,
             data={
                 "content": final_content,
-                "messages": openai_messages,
+                "messages": all_messages,
                 "metadata": {},
             },
         )
@@ -284,10 +270,7 @@ class HolmesReActAgent:
         tool_decisions: List[ToolApprovalDecision],
         request_context: Optional[Dict[str, Any]] = None,
     ) -> tuple[List[Dict[str, Any]], list[StreamMessage]]:
-        """Process tool approval decisions (matches ToolCallingLLM interface).
-
-        Delegates to the same logic as the original implementation.
-        """
+        """Process tool approval decisions (matches ToolCallingLLM interface)."""
         events: list[StreamMessage] = []
         if not tool_decisions:
             return messages, events
@@ -389,7 +372,7 @@ class HolmesReActAgent:
 
 
 class LangChainIssueInvestigator(HolmesReActAgent):
-    """LangGraph-based issue investigator. Replaces IssueInvestigator.
+    """LangChain-based issue investigator. Replaces IssueInvestigator.
 
     Provides the same investigate() interface for issue analysis.
     """
@@ -416,12 +399,7 @@ class LangChainIssueInvestigator(HolmesReActAgent):
         runbooks=None,
         request_context: Optional[Dict[str, Any]] = None,
     ) -> LLMResult:
-        """Investigate an issue (matches IssueInvestigator.investigate() interface).
-
-        Uses the same prompt rendering as the original, then delegates to
-        the LangGraph agent for execution.
-        """
-        import logging
+        """Investigate an issue (matches IssueInvestigator.investigate() interface)."""
         import textwrap
 
         from holmes.core.investigation_structured_output import (
@@ -429,7 +407,8 @@ class LangChainIssueInvestigator(HolmesReActAgent):
             REQUEST_STRUCTURED_OUTPUT_FROM_LLM,
             get_output_format_for_investigation,
         )
-        from holmes.core.prompt import generate_user_prompt, load_and_render_prompt
+        from holmes.core.prompt import generate_user_prompt
+        from holmes.plugins.prompts import load_and_render_prompt
         from holmes.utils.global_instructions import generate_runbooks_args
 
         request_structured_output_from_llm = True
@@ -438,7 +417,6 @@ class LangChainIssueInvestigator(HolmesReActAgent):
         if not sections or len(sections) == 0:
             sections = DEFAULT_SECTIONS
             request_structured_output_from_llm = False
-
         elif self.llm.model and self.llm.model.startswith("bedrock"):
             request_structured_output_from_llm = False
 
@@ -448,7 +426,6 @@ class LangChainIssueInvestigator(HolmesReActAgent):
         if request_structured_output_from_llm:
             response_format = get_output_format_for_investigation(sections)
 
-        # Build system prompt using the same template as IssueInvestigator
         system_prompt = load_and_render_prompt(
             prompt,
             {
@@ -461,7 +438,6 @@ class LangChainIssueInvestigator(HolmesReActAgent):
             },
         )
 
-        # Build user prompt
         base_user = f"\n #This is context from the issue:\n{issue.raw}"
         runbooks_ctx = generate_runbooks_args(
             runbook_catalog=runbooks,
@@ -507,36 +483,34 @@ def _build_tool_call_results(results_dicts: List[dict]) -> List[ToolCallResult]:
 def _convert_graph_event_to_stream(event: dict) -> Generator[StreamMessage, None, None]:
     """Convert LangGraph stream events to Holmes StreamMessage format."""
     for node_name, state_update in event.items():
-        if node_name == "execute_tools":
-            # Tool execution completed - emit tool result events
-            messages = state_update.get("messages", [])
-            for msg in messages:
-                if hasattr(msg, "name") and hasattr(msg, "content"):
+        messages = state_update.get("messages", [])
+        for msg in messages:
+            tool_calls = getattr(msg, "tool_calls", None)
+            content = getattr(msg, "content", "")
+
+            if hasattr(msg, "name") and hasattr(msg, "tool_call_id") and not tool_calls:
+                # ToolMessage - emit tool result event
+                yield StreamMessage(
+                    event=StreamEvents.TOOL_RESULT,
+                    data={
+                        "tool_name": getattr(msg, "name", "") or "",
+                        "tool_call_id": getattr(msg, "tool_call_id", ""),
+                        "result": content[:500] if content else "",
+                    },
+                )
+            elif tool_calls:
+                # AIMessage with tool calls
+                for tc in tool_calls:
                     yield StreamMessage(
-                        event=StreamEvents.TOOL_RESULT,
+                        event=StreamEvents.START_TOOL,
                         data={
-                            "tool_name": msg.name or "",
-                            "tool_call_id": getattr(msg, "tool_call_id", ""),
-                            "result": msg.content[:500] if msg.content else "",
+                            "tool_name": tc.get("name", ""),
+                            "id": tc.get("id", ""),
                         },
                     )
-        elif node_name == "call_model":
-            messages = state_update.get("messages", [])
-            for msg in messages:
-                tool_calls = getattr(msg, "tool_calls", None)
-                content = getattr(msg, "content", "")
-                if tool_calls:
-                    # Emit start_tool_calling for each requested tool
-                    for tc in tool_calls:
-                        yield StreamMessage(
-                            event=StreamEvents.START_TOOL,
-                            data={
-                                "tool_name": tc.get("name", ""),
-                                "id": tc.get("id", ""),
-                            },
-                        )
-                elif content:
-                    yield StreamMessage(
-                        event=StreamEvents.AI_MESSAGE,
-                        data={"message": content},
-                    )
+            elif content and isinstance(msg, type(msg)) and not hasattr(msg, "tool_call_id"):
+                # AIMessage with text content (final answer)
+                yield StreamMessage(
+                    event=StreamEvents.AI_MESSAGE,
+                    data={"message": content},
+                )
